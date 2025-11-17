@@ -4,6 +4,9 @@ export interface AppConfiguration {
   database: {
     url: string;
   };
+  redis: {
+    url: string;
+  };
   jwt: {
     secret: string;
     expiresIn: string;
@@ -22,6 +25,9 @@ export default (): AppConfiguration => ({
   nodeEnv: process.env.NODE_ENV || 'development',
   database: {
     url: process.env.DATABASE_URL || '',
+  },
+  redis: {
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
   },
   jwt: {
     secret: process.env.JWT_SECRET || 'default-secret-change-me',

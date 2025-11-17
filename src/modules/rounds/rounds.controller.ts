@@ -21,6 +21,10 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole, RoundStatus } from '@prisma/client';
+import {
+  RateLimiterGuard,
+  RateLimit,
+} from '../../common/guards/rate-limiter.guard';
 
 @Controller('rounds')
 @UseGuards(JwtAuthGuard)
@@ -53,6 +57,12 @@ export class RoundsController {
   }
 
   @Post(':id/tap')
+  @UseGuards(RateLimiterGuard)
+  @RateLimit({
+    points: 100, // Максимум 100 тапов
+    duration: 10, // За 10 секунд
+    blockDuration: 5, // Блокировка на 5 секунд при превышении
+  })
   @HttpCode(HttpStatus.OK)
   async tapGoose(
     @Param('id') roundId: string,

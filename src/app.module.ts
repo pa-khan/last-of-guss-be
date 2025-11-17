@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaService } from './config/prisma.service';
+import { RedisService } from './config/redis.service';
 import configuration from './config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -22,7 +23,7 @@ import { RoundsModule } from './modules/rounds/rounds.module';
     RoundsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, PrismaService],
-  exports: [PrismaService],
+  providers: [AppService, PrismaService, RedisService],
+  exports: [PrismaService, RedisService],
 })
 export class AppModule {}

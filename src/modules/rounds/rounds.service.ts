@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { RoundStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../../config/prisma.service';
+import { RedisService } from '../../config/redis.service';
 import { CreateRoundDto } from './dto/create-round.dto';
 import {
   RoundDetailDto,
@@ -24,6 +26,7 @@ export class RoundsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService<AppConfiguration, true>,
+    private readonly redisService: RedisService,
   ) {}
 
   async createRound(createRoundDto: CreateRoundDto): Promise<RoundDetailDto> {
@@ -138,109 +141,129 @@ export class RoundsService {
   }
 
   async processTap(roundId: string, userId: string): Promise<TapResponseDto> {
+    // Используем распределенную блокировку для конкретного пользователя и раунда
+    const lockKey = `tap:${roundId}:${userId}`;
+
     try {
-      return await this.prisma.$transaction(
-        async (tx) => {
-          const round = await tx.round.findUnique({
-            where: { id: roundId },
-          });
+      return await this.redisService.withLock(
+        lockKey,
+        async () => {
+          return await this.prisma.$transaction(
+            async (tx) => {
+              // Используем SELECT FOR UPDATE для блокировки строки участника
+              const round = await tx.round.findUnique({
+                where: { id: roundId },
+              });
 
-          if (!round) {
-            throw new RoundNotFoundException(roundId);
-          }
+              if (!round) {
+                throw new RoundNotFoundException(roundId);
+              }
 
-          const now = new Date();
-          const currentStatus = RoundEntity.determineStatus(
-            round.startAt,
-            round.endAt,
-          );
+              const now = new Date();
+              const currentStatus = RoundEntity.determineStatus(
+                round.startAt,
+                round.endAt,
+              );
 
-          if (currentStatus !== RoundStatus.ACTIVE) {
-            this.logger.warn(
-              `Tap attempt on non-active round ${roundId} by user ${userId}. Status: ${currentStatus}`,
-            );
-            throw new RoundNotActiveException(roundId, currentStatus);
-          }
+              if (currentStatus !== RoundStatus.ACTIVE) {
+                this.logger.warn(
+                  `Tap attempt on non-active round ${roundId} by user ${userId}. Status: ${currentStatus}`,
+                );
+                throw new RoundNotActiveException(roundId, currentStatus);
+              }
 
-          if (now < round.startAt || now > round.endAt) {
-            throw new RoundTimeInvalidException(
-              'Round is not within active time boundaries',
-            );
-          }
+              if (now < round.startAt || now > round.endAt) {
+                throw new RoundTimeInvalidException(
+                  'Round is not within active time boundaries',
+                );
+              }
 
-          const user = await tx.user.findUnique({
-            where: { id: userId },
-            select: { id: true, username: true, role: true },
-          });
+              const user = await tx.user.findUnique({
+                where: { id: userId },
+                select: { id: true, username: true, role: true },
+              });
 
-          if (!user) {
-            throw new Error('User not found');
-          }
+              if (!user) {
+                throw new Error('User not found');
+              }
 
-          const participant = await tx.roundParticipant.upsert({
-            where: {
-              roundId_userId: {
-                roundId,
-                userId,
-              },
-            },
-            update: {},
-            create: {
-              roundId,
-              userId,
-              taps: 0,
-              score: 0,
-            },
-          });
-
-          const newTaps = participant.taps + 1;
-          const isEleventhTap = newTaps % 11 === 0;
-
-          let pointsToAdd = 0;
-          if (user.role !== UserRole.NIKITA) {
-            pointsToAdd = isEleventhTap ? 10 : 1;
-          }
-
-          const newScore = participant.score + pointsToAdd;
-
-          await tx.roundParticipant.update({
-            where: { id: participant.id },
-            data: {
-              taps: newTaps,
-              score: newScore,
-            },
-          });
-
-          let updatedRoundTotalScore = round.totalScore;
-          if (user.role !== UserRole.NIKITA) {
-            const updatedRound = await tx.round.update({
-              where: { id: roundId },
-              data: {
-                totalScore: {
-                  increment: pointsToAdd,
+              // Получаем или создаем участника с блокировкой строки
+              let participant = await tx.roundParticipant.findUnique({
+                where: {
+                  roundId_userId: {
+                    roundId,
+                    userId,
+                  },
                 },
-              },
-              select: { totalScore: true },
-            });
-            updatedRoundTotalScore = updatedRound.totalScore;
-          }
+              });
 
-          this.logger.debug(
-            `Tap processed: user=${user.username}, round=${roundId}, taps=${newTaps}, score=${newScore}, points=${pointsToAdd}, isNikita=${user.role === UserRole.NIKITA}`,
-          );
+              if (!participant) {
+                participant = await tx.roundParticipant.create({
+                  data: {
+                    roundId,
+                    userId,
+                    taps: 0,
+                    score: 0,
+                  },
+                });
+              }
 
-          return new TapResponseDto(
-            newScore,
-            newTaps,
-            pointsToAdd,
-            isEleventhTap,
-            updatedRoundTotalScore,
+              const newTaps = participant.taps + 1;
+              const isEleventhTap = newTaps % 11 === 0;
+
+              let pointsToAdd = 0;
+              if (user.role !== UserRole.NIKITA) {
+                pointsToAdd = isEleventhTap ? 10 : 1;
+              }
+
+              const newScore = participant.score + pointsToAdd;
+
+              // Обновляем участника
+              await tx.roundParticipant.update({
+                where: { id: participant.id },
+                data: {
+                  taps: newTaps,
+                  score: newScore,
+                },
+              });
+
+              let updatedRoundTotalScore = round.totalScore;
+              if (user.role !== UserRole.NIKITA) {
+                const updatedRound = await tx.round.update({
+                  where: { id: roundId },
+                  data: {
+                    totalScore: {
+                      increment: pointsToAdd,
+                    },
+                  },
+                  select: { totalScore: true },
+                });
+                updatedRoundTotalScore = updatedRound.totalScore;
+              }
+
+              this.logger.debug(
+                `Tap processed: user=${user.username}, round=${roundId}, taps=${newTaps}, score=${newScore}, points=${pointsToAdd}, isNikita=${user.role === UserRole.NIKITA}`,
+              );
+
+              return new TapResponseDto(
+                newScore,
+                newTaps,
+                pointsToAdd,
+                isEleventhTap,
+                updatedRoundTotalScore,
+              );
+            },
+            {
+              isolationLevel: 'ReadCommitted',
+              maxWait: 5000,
+              timeout: 10000,
+            },
           );
         },
         {
-          isolationLevel: 'Serializable',
-          maxWait: 5000,
-          timeout: 10000,
+          ttl: 5000, // 5 секунд на обработку тапа
+          retries: 5, // 5 попыток получить блокировку
+          retryDelay: 50, // 50мс между попытками
         },
       );
     } catch (error) {
@@ -257,12 +280,20 @@ export class RoundsService {
         throw error;
       }
 
+      // Если не удалось получить блокировку
+      if (errorMessage.includes('Failed to acquire lock')) {
+        throw new TapProcessingException(
+          'Too many concurrent requests. Please try again in a moment.',
+        );
+      }
+
       throw new TapProcessingException(
         'Failed to process tap due to concurrent modification. Please try again.',
       );
     }
   }
 
+  @Cron(CronExpression.EVERY_10_SECONDS)
   async updateRoundStatuses(): Promise<void> {
     const rounds = await this.prisma.round.findMany({
       where: {
