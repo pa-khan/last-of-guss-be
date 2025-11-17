@@ -5,6 +5,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaService } from './config/prisma.service';
 import { RedisService } from './config/redis.service';
+import { LeaderElectionService } from './config/leader-election.service';
 import configuration from './config/configuration';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -23,7 +24,7 @@ import { RoundsModule } from './modules/rounds/rounds.module';
     RoundsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, PrismaService, RedisService],
-  exports: [PrismaService, RedisService],
+  providers: [AppService, PrismaService, RedisService, LeaderElectionService],
+  exports: [PrismaService, RedisService, LeaderElectionService],
 })
 export class AppModule {}

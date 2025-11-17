@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { RoundStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../../config/prisma.service';
 import { RedisService } from '../../config/redis.service';
+import { LeaderElectionService } from '../../config/leader-election.service';
 import { CreateRoundDto } from './dto/create-round.dto';
 import {
   RoundDetailDto,
@@ -27,6 +28,7 @@ export class RoundsService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService<AppConfiguration, true>,
     private readonly redisService: RedisService,
+    private readonly leaderElectionService: LeaderElectionService,
   ) {}
 
   async createRound(createRoundDto: CreateRoundDto): Promise<RoundDetailDto> {
@@ -295,30 +297,43 @@ export class RoundsService {
 
   @Cron(CronExpression.EVERY_10_SECONDS)
   async updateRoundStatuses(): Promise<void> {
-    const rounds = await this.prisma.round.findMany({
-      where: {
-        status: {
-          in: [RoundStatus.COOLDOWN, RoundStatus.ACTIVE],
-        },
-      },
-    });
-
-    for (const round of rounds) {
-      const currentStatus = RoundEntity.determineStatus(
-        round.startAt,
-        round.endAt,
+    if (!this.leaderElectionService.getIsLeader()) {
+      this.logger.debug(
+        `Под ${this.leaderElectionService.getInstanceId()} не является лидером, пропуск обновления статусов`,
       );
+      return;
+    }
 
-      if (currentStatus !== round.status) {
-        await this.prisma.round.update({
-          where: { id: round.id },
-          data: { status: currentStatus },
-        });
+    try {
+      this.logger.debug('Лидер выполняет обновление статусов раундов');
 
-        this.logger.log(
-          `Round ${round.id} status updated: ${round.status} -> ${currentStatus}`,
+      const rounds = await this.prisma.round.findMany({
+        where: {
+          status: {
+            in: [RoundStatus.COOLDOWN, RoundStatus.ACTIVE],
+          },
+        },
+      });
+
+      for (const round of rounds) {
+        const currentStatus = RoundEntity.determineStatus(
+          round.startAt,
+          round.endAt,
         );
+
+        if (currentStatus !== round.status) {
+          await this.prisma.round.update({
+            where: { id: round.id },
+            data: { status: currentStatus },
+          });
+
+          this.logger.log(
+            `Статус раунда ${round.id} обновлён: ${round.status} -> ${currentStatus}`,
+          );
+        }
       }
+    } catch (error) {
+      this.logger.error('Ошибка при обновлении статусов раундов:', error);
     }
   }
 
