@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SURVIVOR
+  NIKITA
+}
+
+enum RoundStatus {
+  PENDING // Раунд создан, но еще не начался cooldown
+  COOLDOWN // Обратный отсчет перед стартом
+  ACTIVE // Раунд активен, можно тапать
+  FINISHED // Раунд завершен
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(SURVIVOR)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  roundParticipants RoundParticipant[]
+
+  @@map("users")
+}
+
+model Round {
+  id         String      @id @default(uuid())
+  startAt    DateTime    @map("start_at")
+  endAt      DateTime    @map("end_at")
+  status     RoundStatus @default(PENDING)
+  totalScore Int         @default(0) @map("total_score")
+  bossImage  String?     @map("boss_image")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+
+  participants RoundParticipant[]
+
+  @@index([status])
+  @@index([startAt])
+  @@index([endAt])
+  @@map("rounds")
+}
+
+model RoundParticipant {
+  id      String @id @default(uuid())
+  roundId String @map("round_id")
+  userId  String @map("user_id")
+  taps    Int    @default(0)
+  score   Int    @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  round Round @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, userId])
+  @@index([roundId])
+  @@index([userId])
+  @@index([roundId, score])
+  @@map("round_participants")
+}
